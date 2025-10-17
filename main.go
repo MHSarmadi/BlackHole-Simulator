@@ -20,11 +20,12 @@ const (
 )
 
 var (
-	yaw   float32 = 0
-	pitch float32 = 0
-	lastX float64
-	lastY float64
-	first = true
+	yaw     float32 = 0
+	pitch   float32 = 0
+	radius  float32 = 10.0
+	lastX   float64
+	lastY   float64
+	first   = true
 )
 
 const vertexShader = `#version 410
@@ -40,15 +41,34 @@ in vec2 uv;
 out vec4 color;
 uniform sampler2D tex;
 uniform mat3 camRot;
+uniform vec3 camPos;
+bool intersectBox(vec3 ro, vec3 rd, vec3 boxmin, vec3 boxmax) {
+    vec3 invRd = 1.0 / rd;
+    vec3 tbot = invRd * (boxmin - ro);
+    vec3 ttop = invRd * (boxmax - ro);
+    vec3 tmin = min(ttop, tbot);
+    vec3 tmax = max(ttop, tbot);
+    vec2 t = max(tmin.xx, tmin.yz);
+    float tnear = max(t.x, t.y);
+    t = min(tmax.xx, tmax.yz);
+    float tfar = min(t.x, t.y);
+    return tnear <= tfar && tfar > 0.0;
+}
 void main() {
     vec2 frag = uv * 2.0 - 1.0;
     float aspect = 800.0/600.0;
-    vec3 dir = normalize(vec3(frag.x * aspect * tan(radians(45.0)), frag.y * tan(radians(45.0)), -1.0));
-    dir = camRot * dir;
-    float theta = acos(dir.y);
-    float phi = atan(dir.x, -dir.z);
-    vec2 sph = vec2((phi + 3.14159265) / (2.0 * 3.14159265), 1.0 - theta / 3.14159265);
-    color = texture(tex, sph);
+    vec3 localDir = vec3(frag.x * aspect * tan(radians(45.0)), frag.y * tan(radians(45.0)), -1.0);
+    vec3 dir = normalize(camRot * localDir);
+    vec3 boxmin = vec3(-0.5, -0.5, -0.5);
+    vec3 boxmax = vec3(0.5, 0.5, 0.5);
+    if (intersectBox(camPos, dir, boxmin, boxmax)) {
+        color = vec4(1.0, 1.0, 1.0, 1.0);
+    } else {
+        float theta = acos(dir.y);
+        float phi = atan(dir.x, -dir.z);
+        vec2 sph = vec2((phi + 3.14159265) / (2.0 * 3.14159265), 1.0 - theta / 3.14159265);
+        color = texture(tex, sph);
+    }
 }`
 
 func main() {
@@ -72,6 +92,7 @@ func main() {
 	window.SetInputMode(glfw.CursorMode, glfw.CursorDisabled)
 	window.SetCursorPosCallback(cursorPosCallback)
 	window.SetKeyCallback(keyCallback)
+	window.SetScrollCallback(scrollCallback)
 
 	if err := gl.Init(); err != nil {
 		panic(err)
@@ -95,7 +116,8 @@ func main() {
 
 	tex := loadTexture("eso0932a.jpg")
 
-	camLoc := gl.GetUniformLocation(program, gl.Str("camRot\x00"))
+	camRotLoc := gl.GetUniformLocation(program, gl.Str("camRot\x00"))
+	camPosLoc := gl.GetUniformLocation(program, gl.Str("camPos\x00"))
 
 	for !window.ShouldClose() {
 		gl.Clear(gl.COLOR_BUFFER_BIT)
@@ -103,15 +125,22 @@ func main() {
 		gl.UseProgram(program)
 		gl.ActiveTexture(gl.TEXTURE0)
 		gl.BindTexture(gl.TEXTURE_2D, tex)
+
 		sy := float32(math.Sin(float64(yaw)))
 		cy := float32(math.Cos(float64(yaw)))
 		sp := float32(math.Sin(float64(pitch)))
 		cp := float32(math.Cos(float64(pitch)))
+
+		forward := mgl32.Vec3{cy * cp, sp, sy * cp}
+		camPos := forward.Mul(-radius)
+
 		right := mgl32.Vec3{-sy, 0, cy}
 		up := mgl32.Vec3{-cy * sp, cp, -sy * sp}
-		minus_forward := mgl32.Vec3{-cy * cp, -sp, -sy * cp}
-		rot := mgl32.Mat3FromRows(right, up, minus_forward).Transpose()
-		gl.UniformMatrix3fv(camLoc, 1, false, &rot[0])
+		minusForward := forward.Mul(-1)
+		rot := mgl32.Mat3FromRows(right, up, minusForward).Transpose()
+		gl.UniformMatrix3fv(camRotLoc, 1, false, &rot[0])
+
+		gl.Uniform3f(camPosLoc, camPos[0], camPos[1], camPos[2])
 
 		gl.BindVertexArray(vao)
 		gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
@@ -143,6 +172,13 @@ func cursorPosCallback(w *glfw.Window, x, y float64) {
 func keyCallback(w *glfw.Window, key glfw.Key, _ int, act glfw.Action, _ glfw.ModifierKey) {
 	if act == glfw.Press && key == glfw.KeyEscape {
 		w.SetShouldClose(true)
+	}
+}
+
+func scrollCallback(w *glfw.Window, xoff, yoff float64) {
+	radius -= float32(yoff) * 0.5
+	if radius < 0.1 {
+		radius = 0.1
 	}
 }
 
